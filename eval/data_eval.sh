@@ -7,7 +7,7 @@
 
 nvcc -V
 
-source /home
+source /home/
 echo $PATH
 
 
@@ -15,7 +15,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3
 for i in {27..27..1}; do
     echo "Running iteration $i"
 
-    python data.py \
+    python Data_eval.py \
     --model_name_or_path "" \
     --data_name "aime24" \
     --prompt_type "qwen-instruct" \

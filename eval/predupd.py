@@ -6,8 +6,8 @@ def reconstruct_and_save_rank1_with_pred_u(
     model1_path,
     model2_path,
     svd_components_base_path,
-    predicted_u_file,                      # <- 新增：predicted_vectors.pt 路径
-    output_subdir="rank1_predu"            # 输出目录后缀，避免覆盖
+    predicted_u_file,                 
+    output_subdir="rank1_predu"          
 ):
     print("Loading base config and tokenizer...")
     original_config = AutoConfig.from_pretrained(model1_path)
@@ -28,7 +28,7 @@ def reconstruct_and_save_rank1_with_pred_u(
     )
     print("Original models loaded successfully")
 
-    # SVD 组件与输出目录
+
     svd_file = os.path.join(svd_components_base_path, "svd_components.pt")
     if not os.path.exists(svd_file):
         raise FileNotFoundError(f"SVD file not found: {svd_file}")
@@ -36,7 +36,7 @@ def reconstruct_and_save_rank1_with_pred_u(
     output_dir = os.path.join(svd_components_base_path, output_subdir)
     os.makedirs(output_dir, exist_ok=True)
 
-    # 载入 SVD 字典与 预测的 u 向量字典
+
     print(f"Loading SVD components from: {svd_file}")
     svd_components = torch.load(svd_file, map_location=device)
 
@@ -67,7 +67,6 @@ def reconstruct_and_save_rank1_with_pred_u(
             key_S  = f"self_attn_{name1}_S"
             key_Vt = f"self_attn_{name1}_Vt"
 
-            # 预测 u 的 key（与你 earlier 的 first_u / r2/predict 代码保持一致）
             module_key = f"layer_{layer_idx}_self_attn_{name1}"
 
             if key_U in layer_svd and key_S in layer_svd and key_Vt in layer_svd:
@@ -75,23 +74,15 @@ def reconstruct_and_save_rank1_with_pred_u(
                 S  = layer_svd[key_S ].to(device, dtype=target_dtype)
                 Vt = layer_svd[key_Vt].to(device, dtype=target_dtype)
 
-                # 归一化系数（与原逻辑一致）
                 norm_factor = torch.norm(U @ torch.diag(S) @ Vt)
 
-                # 取预测的 u（长度应与 U[:,0] 相同）
+
                 u_pred = predicted_u_dict.get(module_key, None)
                 if u_pred is None:
                     print(f"    ⏩ Pred u missing for {module_key} - skipping this param")
                     continue
 
                 u_pred = u_pred.to(device, dtype=target_dtype).view(-1, 1)   # (out_dim, 1)
-                # if u_pred.shape[0] != U.shape[0]:
-                #     print(f"    ⚠️ Shape mismatch for {module_key}: pred {u_pred.shape[0]} vs U {U.shape[0]} - skipping")
-                #     continue
-
-                # 用预测的 u 与 Vt 第一行做外积，并按 full ΔW 的 Frobenius 范数缩放
-                # if torch.norm(u_pred) >0.03:
-                #     u_pred = (u_pred/torch.norm(u_pred))*0.03
                 print(torch.norm(u_pred))
                 update = 1 * (u_pred @ Vt[0:1, :])                 # (out_dim, in_dim)
                 param1.data += update
@@ -124,11 +115,7 @@ def reconstruct_and_save_rank1_with_pred_u(
                     continue
 
                 u_pred = u_pred.to(device, dtype=target_dtype).view(-1, 1)
-                # if u_pred.shape[0] != U.shape[0]:
-                #     print(f"    ⚠️ Shape mismatch for {module_key}: pred {u_pred.shape[0]} vs U {U.shape[0]} - skipping")
-                #     continue
-                # if torch.norm(u_pred) >0.03:
-                #     u_pred = (u_pred/torch.norm(u_pred))*0.03
+
                 print(torch.norm(u_pred))
                 update = 1* (u_pred @ Vt[0:1, :])                 # (out_dim, in_dim)
                 param1.data += update
@@ -148,7 +135,7 @@ def reconstruct_and_save_rank1_with_pred_u(
 
 # ==================== 配置与调用 ====================
 if __name__ == "__main__":
-    for i in range(10,12):
+    for i in range(1,12):
         model1_path = ""
         model2_path = f""
         svd_components_base_path = f""
@@ -160,5 +147,5 @@ if __name__ == "__main__":
             model2_path=model2_path,
             svd_components_base_path=svd_components_base_path,
             predicted_u_file=predicted_u_file,
-            output_subdir=f""   # 输出到 PRIME/rank1_predu
+            output_subdir=f"" 
         )

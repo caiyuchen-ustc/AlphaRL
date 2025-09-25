@@ -22,14 +22,14 @@ from utils.grader import *
 import pickle
 from math import comb
 
-# 添加新的评估器类 - 从第一个代码复制过来的OBJudge
+
 import sympy as sp
 from sympy import simplify, Eq, sympify, Pow
 from sympy.parsing.latex import parse_latex
 
 class OBJudge:
     def __init__(self):
-        # Map of special symbols to their replacements
+
         self.special_signal_map = {
             "\\left": "",
             "\\right": "",
@@ -508,14 +508,6 @@ def truncate_text_by_repently_0_percentage(repently_0text, text, percentage, tok
     token_count = len(truncated_tokens)
     result = tokenizer.decode(truncated_tokens, skip_special_tokens=True)
 
-    
-    # # # 对原文进行tokenize，取相同数量的tokens（不含特殊token）
-    # text_tokens = tokenizer.encode(text, add_special_tokens=False)
-    # truncated_text_tokens = text_tokens[:token_count]
-    
-    # # decode回文本，确保不添加特殊token
-    # result = tokenizer.decode(truncated_text_tokens, skip_special_tokens=True)
-    
     return result
 
 
@@ -568,14 +560,14 @@ def infer(args):
         llm = LLM(model=model_name_or_path, 
             tensor_parallel_size=len(available_gpus), 
             trust_remote_code=True, 
-            gpu_memory_utilization=0.7,   # 保守内存使用
-            swap_space=64                # 交换空间
+            gpu_memory_utilization=0.7,   
+            swap_space=64              
             )
     else:
         llm = LLM(model=model_name_or_path, 
             tensor_parallel_size=len(available_gpus), 
             trust_remote_code=True, 
-            gpu_memory_utilization=0.96,   # 保守内存使用
+            gpu_memory_utilization=0.96, 
             )
     for data_name in tqdm(data_names):
         args.data_name = data_name
@@ -604,74 +596,32 @@ def infer(args):
         prompt_batch = []
         for idx, example in tqdm(enumerate(examples)):
             question = parse_question(example, args.data_name)
-            #system_prompt, few_shot_prompt, question_format = get_three_prompt(args.prompt_type, args.data_name)
-            #question_prompt = "Solve the following math problem step by step. The last line of your response should be of the form Answer: $Answer (without quotes) where $Answer is the answer to the problem.\n\n"
             question_prompt = '\nPlease reason step by step, and put your final answer within \\boxed{}'
-            # str_to_remove1 = "Solve the following math problem step by step. The last line of your response should be of the form Answer: $Answer (without quotes) where $Answer is the answer to the problem.\n\n"
-            # str_to_remove2 = "Remember to put your answer on its own line after \"Answer:\".\n\n"
-            #str_to_remove2 = "Remember to put your answer on its own line after \"Answer:\".\n\n"
-            #question = str_to_remove1 + question + str_to_remove2 
-            #question_prompt = f"User: {question}\n\nAssistant:"
-            #question = question_prompt
-            #question = question +question_prompt
-            # if "Qwen2.5-Math-7B" not in model_name_or_path:
-            #     # print(model_name_or_path)
-            #     # print(model_name_or_path)
-            #cur_prompt = apply_r1_template(question)
-            #@cur_prompt = apply_template(tokenizer=tokenizer, question=question)
-            # else: 
-                
+
             question =  question + question_prompt
             cur_prompt = apply_template(tokenizer=tokenizer, question=question)
-            #cur_prompt +='''This is a simple question that I will answer directly without deep thinking. </think>'''
             prompt_batch.append(cur_prompt)
         
         print("Sample prompt:")
         print(prompt_batch[0])
-        
-        # # 🔥 关键修改：根据模型类型选择配置和批次大小
-        # is_large_model = "32" in args.model_name_or_path
-        
-        # if is_large_model:
-        #     print("🚨 检测到大模型(32B+)，使用保守配置和小批次")
-        #     batch_size = len(prompt_batch)
-        #     llm = LLM(model=model_name_or_path, 
-        #             tensor_parallel_size=len(available_gpus), 
-        #             trust_remote_code=True, 
-        #             # 大模型优化配置
-        #             dtype="float16",
-        #             gpu_memory_utilization=0.7,   # 保守内存使用
-        #             swap_space=64                # 交换空间
-        #             )
-        # else:
-        #     print("✅ 检测到中小模型，使用标准配置")
         batch_size = len(prompt_batch)
-        #     llm = LLM(model=model_name_or_path, 
-        #             tensor_parallel_size=len(available_gpus), 
-        #             trust_remote_code=True, 
-        #             gpu_memory_utilization=0.96
-        #             )
         
-        print(f"📊 总样本数: {len(examples)}, 批次大小: {batch_size if batch_size < len(examples) else '全部'}")
-        
-        # 🚀 分批生成
         file_outputs = []
         correct_cnt = 0
         
         for cur_generation_epoch in range(generation_epoch):
-            print(f"🔄 生成轮次 {cur_generation_epoch + 1}/{generation_epoch}")
-            
-            # 分批处理prompts
-            for batch_start in tqdm(range(0, len(prompt_batch), batch_size), desc="批次处理"):
+            print(f"🔄{cur_generation_epoch + 1}/{generation_epoch}")
+
+            for batch_start in tqdm(range(0, len(prompt_batch), batch_size)):
                 batch_end = min(batch_start + batch_size, len(prompt_batch))
                 current_batch_prompts = prompt_batch[batch_start:batch_end]
                 current_batch_examples = examples[batch_start:batch_end]
                 
-                # 生成当前批次
+
                 try:
                     completions = llm.generate(current_batch_prompts, sampling_params)
                     
-                    # 处理生成结果
+
                     for i, completion in enumerate(completions):
                         global_idx = batch_start + i
                         d = current_batch_examples[i]
@@ -679,7 +629,7 @@ def infer(args):
                         generated_responses = [completion.outputs[j].text for j in range(len(completion.outputs))]
                         
                         if cur_generation_epoch == 0:
-                            # 第一轮：初始化结果
+
                             result = {
                                 "question": question,
                                 "generated_responses": generated_responses,
@@ -694,14 +644,11 @@ def infer(args):
                             file_outputs[global_idx]['generated_responses'] += generated_responses
                             
                 except Exception as e:
-                    print(f"❌ 批次 {batch_start}-{batch_end} 生成失败: {e}")
-                    # 可以选择跳过或重试
+                    print(f"❌")
+
                     raise e
-        
-        print("✅ LLM生成完成")
-        print(f"📊 生成结果数量: {len(file_outputs)}")
-        
-        # 检查正确性 - 这里是主要修改的地方
+
+
         pass_at_k_list = []
         k = args.k
         

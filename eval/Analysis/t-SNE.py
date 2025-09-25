@@ -33,9 +33,9 @@ def get_common_keys(all_dicts):
     return sorted(list(common_keys))
 
 plt.rcParams.update({
-    "pdf.fonttype": 42,  # TrueType, 避免 Type 3
+    "pdf.fonttype": 42, 
     "ps.fonttype": 42,
-    "font.size": 9,      # 与 ICLR 正文接近
+    "font.size": 9,   
     "axes.linewidth": 0.6,
 })
 
@@ -44,7 +44,6 @@ def _clamp(x, lo, hi): return max(lo, min(hi, x))
 def visualize_tsne_per_key(all_dicts, common_keys, output_dir="tsne_first_u_per_key"):
     os.makedirs(output_dir, exist_ok=True)
 
-    # 可选：把版本写到一个 metadata
     with open(os.path.join(output_dir, "_versions.txt"), "w") as f:
         import sklearn, torch
         f.write(f"python: {sys.version}\n")
@@ -69,9 +68,9 @@ def visualize_tsne_per_key(all_dicts, common_keys, output_dir="tsne_first_u_per_
             if n_samples < 3:
                 print(f"⚠️ Skip {key}, only {n_samples} samples"); continue
 
-            # —— 标准化 → PCA(50) → t-SNE(2) ——
+
             X = StandardScaler().fit_transform(vectors)
-            #print(X.shape[1])
+
             pca = PCA(n_components=2, random_state=42)
             Xp  = pca.fit_transform(X)
 
@@ -87,18 +86,12 @@ def visualize_tsne_per_key(all_dicts, common_keys, output_dir="tsne_first_u_per_
             )
             Y = tsne.fit_transform(Xp)
 
-            # # —— 保存坐标（便于排版重画） ——
-            # csv_path = os.path.join(output_dir, f"{key.replace('.', '_')}.csv")
-            # with open(csv_path, "w", newline="") as f:
-            #     w = csv.writer(f); w.writerow(["key","step","x","y"])
-            #     for s, (x, y) in zip(labels, Y): w.writerow([key, s, x, y])
 
-            # —— 作图：散点 + 轨迹连线 ——
-            fig, ax = plt.subplots(figsize=(6, 5))  # 小巧，版面友好
-            order = np.argsort(labels)  # 按 step 排序
+            fig, ax = plt.subplots(figsize=(6, 5))  
+            order = np.argsort(labels)  
             Yo, Lo = Y[order], labels[order]
 
-            # 连线（相邻 step）
+
             from matplotlib.collections import LineCollection
             segs = np.stack([Yo[:-1], Yo[1:]], axis=1)
             lc = LineCollection(segs, colors="0.5", linewidths=0.6, alpha=0.7)
@@ -110,19 +103,14 @@ def visualize_tsne_per_key(all_dicts, common_keys, output_dir="tsne_first_u_per_
                 c=Lo, cmap="viridis", s=72, alpha=0.85, edgecolors="none"
             )
 
-            # 简洁标题
-            # ax.set_title(f"t-SNE: {key.replace('_','.')}", pad=4)
-
-            # 坐标外观
             for spine in ["top", "right"]:
                 ax.spines[spine].set_visible(False)
             ax.grid(alpha=0.15, linewidth=0.4)
 
-            # 离散色条
+
             cbar = plt.colorbar(sc, ax=ax, fraction=0.046, pad=0.03)
             ticks = np.linspace(Lo.min(), Lo.max(), num=min(6, len(np.unique(Lo))), dtype=int)
             cbar.set_ticks(sorted(set(ticks)))
-            #cbar.set_label("Checkpoint Step")
             cbar.set_ticks([])
             ax.set_xticklabels([])
             ax.set_yticklabels([])
@@ -140,4 +128,4 @@ if __name__ == "__main__":
     all_dicts = load_dicts(base_path, start=1, end=27)
     common_keys = get_common_keys(all_dicts)
     print(f"Found {len(common_keys)} common keys")
-    visualize_tsne_per_key(all_dicts, common_keys, output_dir="biaozhun_tsne_first_u_per_key")
+    visualize_tsne_per_key(all_dicts, common_keys, output_dir="")

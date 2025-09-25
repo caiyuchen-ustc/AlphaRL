@@ -11,18 +11,17 @@ plt.rcParams.update({
     "font.size": 14,
     "axes.linewidth": 1,
 })
-# ---------------- 读文本 ----------------
+
 input_file = ""
 with open(input_file, "r", encoding="utf-8") as f:
     results = json.load(f)
 
-aa = "".join(res["full_text"] for res in results[:10])  # 拼接前10条文本
+aa = "".join(res["full_text"] for res in results[:]) 
 
-# ---------------- 模型路径 ----------------
+
 model1_path = ""
 model2_path = ""
 
-# ---------------- 加载模型和tokenizer ----------------
 model1 = AutoModelForCausalLM.from_pretrained(model1_path, device_map="cpu")
 model2 = AutoModelForCausalLM.from_pretrained(model2_path, device_map="cpu")
 
@@ -36,14 +35,13 @@ ids2 = tok2(aa, return_tensors="pt", add_special_tokens=False)["input_ids"][0].u
 tokens1 = [tok1.decode([i]) for i in ids1]
 tokens2 = [tok2.decode([i]) for i in ids2]
 
-# ---------------- 抽取对应embedding ----------------
+
 emb_matrix1 = model1.get_input_embeddings().weight.detach().cpu()
 emb_matrix2 = model2.get_input_embeddings().weight.detach().cpu()
 
 emb1 = emb_matrix1[ids1]
 emb2 = emb_matrix2[ids2]
 
-# ---------------- 拼接+降维 ----------------
 all_embeddings = torch.cat([emb1, emb2], dim=0).numpy()
 labels = np.array([0]*len(emb1) + [1]*len(emb2))  # 0=Base, 1=DIST
 
@@ -53,7 +51,7 @@ embeddings_2d = pca.fit_transform(all_embeddings)
 coords1 = embeddings_2d[:len(emb1)]
 coords2 = embeddings_2d[len(emb1):]
 
-# ---------------- 匹配相同的token ----------------
+
 common_tokens = set(tokens1) & set(tokens2)
 print("Common tokens:", len(common_tokens))
 
@@ -63,10 +61,9 @@ for t in common_tokens:
     i2 = tokens2.index(t)
     pairs.append((coords1[i1], coords2[i2], t))
 
-# ---------------- 配色与可视化 ----------------
-color_base = "#EE1127"   # Base 颜色
-color_dist = "#5880F8"   # Dr.GRPO 颜色
 
+color_base = "#EE1127"  
+color_dist = "#5880F8"  
 plt.figure(figsize=(9, 6))
 plt.scatter(coords1[:,0], coords1[:,1], 
             edgecolors=color_base, facecolors="none", alpha=0.9, 
@@ -76,13 +73,13 @@ plt.scatter(coords2[:,0], coords2[:,1],
             edgecolors=color_dist, facecolors="none", alpha=0.9, 
             s=20, marker="^", label="DAPO")
 
-# 画连接线
+
 for (p1, p2, tok) in pairs:
     plt.plot([p1[0], p2[0]], [p1[1], p2[1]], c="gray", alpha=0.3, linewidth=0.5)
 
-plt.legend(fontsize=24, handletextpad=0.3)  # 默认大约是 0.8
-# plt.tick_params(axis='both', which='major', labelsize=24)  # 坐标轴刻度字体
-#plt.title("Projection of Embeddings Before and After Dr.GRPO", fontsize=20)
+plt.legend(fontsize=24, handletextpad=0.3)  
+# plt.tick_params(axis='both', which='major', labelsize=24)  
+# plt.title("Projection of Embeddings Before and After Dr.GRPO", fontsize=20)
 # plt.xlabel("t-SNE Dim 1", fontsize=20)
 # plt.ylabel("t-SNE Dim 2", fontsize=20)
 plt.tight_layout()
