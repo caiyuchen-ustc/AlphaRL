@@ -1,185 +1,130 @@
 import os
 import torch
+import gc
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+from tqdm import tqdm
 
-def reconstruct_and_save_rank1(model1_path, model2_path, svd_components_base_path, start_step, end_step):
-    print("Loading base config and tokenizer...")
-    original_config = AutoConfig.from_pretrained(model1_path)
-    target_dtype = original_config.torch_dtype
-    tokenizer = AutoTokenizer.from_pretrained(model1_path)
+@torch.no_grad()
+def reconstruct_rank_k(base_model_path, step_model_path, svd_base_path, start_step, end_step, rl_algorithm,rank=1,alpha=1, device="cuda"):
+    """Reconstruct models using top-k SVD components."""
+    print(f"Loading base config and tokenizer from {base_model_path} ...")
+    config = AutoConfig.from_pretrained(base_model_path)
+    dtype = config.torch_dtype or torch.float32
+    tokenizer = AutoTokenizer.from_pretrained(base_model_path)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device ='cpu'
+    device = torch.device(device if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    norm=0
 
-    count=0
-    svg_norm=0
-    svg_count=0
-    for top_k in range(0, 2, 10):
-        for global_step in range(start_step, end_step + 1):
-            print(f'\n===== Processing top_k: {top_k} =====')
-            print("Loading original models...")
-            model1 = AutoModelForCausalLM.from_pretrained(
-                model1_path,
-                torch_dtype=target_dtype,
-                device_map=device  
-            )
-            model2_paths = os.path.join(model2_path)
-            model2 = AutoModelForCausalLM.from_pretrained(
-                model2_paths,
-                torch_dtype=target_dtype,
-                device_map=device 
-            )
-            print("Original models loaded successfully")
-            try:
-                print(f"\n----- Processing global_step {global_step} -----")
+    for step in tqdm(range(start_step, end_step + 1), desc="Processing steps"):
+        print(f"\n=== Step {step} ===")
+        norm_k_sum = 0
+        norm_sum = 0
+        base_model = AutoModelForCausalLM.from_pretrained(base_model_path, torch_dtype=dtype).to(device)
+        step_model_dir = os.path.join(step_model_path, f"{rl_algorithm}-step-{step}")
+        step_model = AutoModelForCausalLM.from_pretrained(step_model_dir, torch_dtype=dtype).to(device)
 
-                if "aa" in model2_path:
-                    svd_file = os.path.join(svd_components_base_path, f"global_step_{global_step}", 'svd_components.pt')
-                    output_dir = os.path.join(svd_components_base_path, f"global_step_{global_step}", f'rank_1')
+        svd_file = os.path.join(svd_base_path, f"{rl_algorithm}-step-{step}", "svd_components.pt")
+        if not os.path.exists(svd_file):
+            print(f"⚠️  SVD file not found: {svd_file}, skipping step {step}")
+            continue
+        svd_components = torch.load(svd_file, map_location=device)
 
-                else:
-                    svd_file = os.path.join(svd_components_base_path,'svd_components.pt')
-                    output_dir = os.path.join(svd_components_base_path, f'rank_1')
+        output_dir = os.path.join(svd_base_path, f"{rl_algorithm}-step-{step}", f"rank_{rank}")
+        os.makedirs(output_dir, exist_ok=True)
+        for layer_idx, (layer_base, layer_step) in enumerate(zip(base_model.model.layers, step_model.model.layers)):
+            layer_svd = svd_components.get(f"layer_{layer_idx}", {})
 
+            print(f"\n🔹 Processing layer {layer_idx}")
 
-                if not os.path.exists(svd_file):
-                    print(f"SVD file not found: {svd_file} - skipping")
-                    continue
+            # Self-attention
+            for (name_base, param_base), (name_step, param_step) in zip(layer_base.self_attn.named_parameters(),
+                                                                        layer_step.self_attn.named_parameters()):
+                if name_base.endswith(".weight"):
+                    key_U = f"self_attn_{name_base}_U"
+                    key_S = f"self_attn_{name_base}_S"
+                    key_Vt = f"self_attn_{name_base}_Vt"
+                    if key_U in layer_svd:
+                        U = layer_svd[key_U].to(device, dtype=dtype)
+                        S = layer_svd[key_S].to(device, dtype=dtype)
+                        Vt = layer_svd[key_Vt].to(device, dtype=dtype)
+                        U_k = U[:, :rank]
+                        S_k = S[:rank]
+                        Vt_k = Vt[:rank, :]
+                        update = U @ torch.diag(S) @ Vt
+                        update_k = U_k @ torch.diag(S_k) @ Vt_k
+                        update_norm = torch.norm(update.data)
+                        update_k_norm = torch.norm(update_k.data)
+                        param_base.data += alpha * (update_norm/update_k_norm) * update_k
 
-
-                os.makedirs(output_dir, exist_ok=True)
-
-                svd_components = torch.load(svd_file, map_location=device)
-
-                print("Starting model parameter updates...")
-
-                for layer_idx, (layer1, layer2) in enumerate(zip(model1.model.layers, model2.model.layers)):
-                    print(f"  Processing layer {layer_idx}")
-                    layer_svd = svd_components.get(f'layer_{layer_idx}', {})
-                    if not layer_svd:
-                        print(f"  No SVD data for layer {layer_idx} - skipping")
-                        continue
-
-
-                    for (name1, param1), (name2, param2) in zip(layer1.self_attn.named_parameters(), 
-                                                               layer2.self_attn.named_parameters()):
-
-                        assert name1 == name2, f"Parameter name mismatch: {name1} vs {name2}"
+                        print(f"  [Self-Attn] {name_base} | rank={rank} | update_norm={update_norm:.4f}")
                         
-                        if name1.endswith('.weight'):
-                            key_U = f'self_attn_{name1}_U'
-                            key_S = f'self_attn_{name1}_S'
-                            key_Vt = f'self_attn_{name1}_Vt'
-                            
-                            if key_U in layer_svd and key_S in layer_svd and key_Vt in layer_svd:
+                        norm_k_sum += update_k_norm
+                        norm_sum += update_norm
 
-                                U = layer_svd[key_U].to(device, dtype=target_dtype)
-                                S = layer_svd[key_S].to(device, dtype=target_dtype)
-                                Vt = layer_svd[key_Vt].to(device, dtype=target_dtype)
+            # MLP
+            for (name_base, param_base), (name_step, param_step) in zip(layer_base.mlp.named_parameters(),
+                                                                        layer_step.mlp.named_parameters()):
+                if name_base.endswith(".weight"):
+                    key_U = f"mlp_{name_base}_U"
+                    key_S = f"mlp_{name_base}_S"
+                    key_Vt = f"mlp_{name_base}_Vt"
+                    if key_U in layer_svd:
+                        U = layer_svd[key_U].to(device, dtype=dtype)
+                        S = layer_svd[key_S].to(device, dtype=dtype)
+                        Vt = layer_svd[key_Vt].to(device, dtype=dtype)
+                        U_k = U[:, :rank]
+                        S_k = S[:rank]
+                        Vt_k = Vt[:rank, :]
+                        update = U @ torch.diag(S) @ Vt
+                        update_k = U_k @ torch.diag(S_k) @ Vt_k
+                        update_norm = torch.norm(update.data)
+                        update_k_norm = torch.norm(update_k.data)
+                        param_base.data += alpha * (update_norm/update_k_norm) * update_k
 
+                        print(f"  [Self-Attn] {name_base} | rank={rank} | update_norm={update_k_norm:.4f}")
 
-                                k = max(1, int(len(S) * top_k / 100))
+                        norm_k_sum += update_k_norm
+                        norm_sum += update_norm
 
-                                print(f"    Using top {k}/{len(S)} components for self_attn.{name1}")
+        print('---------------------------------------------')
+        print(f" Norm[Top - {rank}] / Norm[Top - 100%] = {norm_k_sum/norm_sum:.4f} ")
+        print('---------------------------------------------')
+        base_model.to("cpu")
+        base_model.save_pretrained(output_dir, torch_dtype=dtype, safe_serialization=True)
+        tokenizer.save_pretrained(output_dir)
+        print(f"✅ Saved rank-{rank} model at {output_dir}")
 
+        del base_model, step_model, svd_components
+        torch.cuda.empty_cache()
+        gc.collect()
 
-                                U_top = U[:, :k]
-                                S_top = S[:k]
-                                V_top = Vt[:k, :]
+    print("🎉 All steps processed!")
 
-                                S_matrix = torch.diag(S_top)
-                                USV_top = U_top @ S_matrix @ V_top
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--base_model_path", type=str, required=True, help="Base model path")
+    parser.add_argument("--step_model_path", type=str, required=True, help="Directory containing DAPO-step-i models")
+    parser.add_argument("--svd_base_path", type=str, required=True, help="Directory containing SVD .pt files")
+    parser.add_argument("--start_step", type=int, default=1)
+    parser.add_argument("--end_step", type=int, default=27)
+    parser.add_argument("--rl_algorithm", type=str, required=True, help="rl_algorithm")
+    parser.add_argument("--rank", type=int, default=1, help="Top-k rank for SVD reconstruction")
+    parser.add_argument("--alpha", type=int, default=1, help="Scale Factor")
+    parser.add_argument("--device", type=str, default="cuda", help="Device: cuda or cpu")
+    args = parser.parse_args()
 
-                                norm_factor = torch.norm(U@torch.diag(S)@Vt)
-                                count+=1
-                                USV_top_norm = torch.norm(USV_top)
-                                norm+=USV_top_norm/norm_factor
-
-                                svg_norm +=S_top.sum()/S.sum()
-                                param1.data = param1.data + 1* (norm_factor/USV_top_norm)*USV_top
-                                print(f"    Updated model1 self_attn.{name1} parameters")
-
-
-                    for (name1, param1), (name2, param2) in zip(layer1.mlp.named_parameters(), 
-                                                               layer2.mlp.named_parameters()):
-
-                        assert name1 == name2, f"Parameter name mismatch: {name1} vs {name2}"
-                        
-                        if name1.endswith('.weight'):
-                            key_U = f'mlp_{name1}_U'
-                            key_S = f'mlp_{name1}_S'
-                            key_Vt = f'mlp_{name1}_Vt'
-                            
-                            if key_U in layer_svd and key_S in layer_svd and key_Vt in layer_svd:
-
-                                U = layer_svd[key_U].to(device, dtype=target_dtype)
-                                S = layer_svd[key_S].to(device, dtype=target_dtype)
-                                Vt = layer_svd[key_Vt].to(device, dtype=target_dtype)
-
-                                k = max(1, int(len(S) * top_k / 100))
-
-                                print(f"    Using top {k}/{len(S)} components for mlp.{name1}")
-
-
-                                U_top = U[:, :k]
-                                S_top = S[:k]
-                                V_top = Vt[:k, :]
-
-
-                                S_matrix = torch.diag(S_top)
-                                USV_top = U_top @ S_matrix @ V_top 
-
-                                norm_factor = torch.norm(U@torch.diag(S)@Vt) 
-                                USV_top_norm = torch.norm(USV_top)
-                                print('---------')
-                                print(norm_factor)
-                                print(USV_top_norm)
-                                print('---------')
-                                param1.data = param1.data + 1* (norm_factor/USV_top_norm)*USV_top
-                                norm+=USV_top_norm/norm_factor
-
-                                count+=1
-
-                                print(f"    Updated model1 mlp.{name1} parameters")
-
-                model1 = model1.to('cpu') 
-                model1.save_pretrained(
-                    output_dir,
-                    torch_dtype=target_dtype,
-                    safe_serialization=True
-                )
-                # tokenizer.save_pretrained(output_dir)
-                # print(f"Successfully saved rank-1 model for global_step {global_step} (top_k={top_k})")
-
-            except KeyboardInterrupt:
-                print(f"\nUser interrupted - skipping global_step {global_step}")
-                continue
-            except Exception as e:
-                print(f"\nError processing global_step {global_step}: {str(e)}")
-                continue
-            finally:
-                torch.cuda.empty_cache() 
-
-
-            del model1, model2, svd_components
-            torch.cuda.empty_cache()  
-            print(f"Released GPU memory after top_k={top_k}\n")
-    print(norm/count)
-    print("All processes completed")
-
-
-
-
-model1_path = ""
-model2_path = ""
-svd_components_base_path = ""
-
-
-start_step = 1
-end_step = 1
-reconstruct_and_save_rank1(model1_path, model2_path, svd_components_base_path, start_step, end_step)
+    reconstruct_rank_k(
+        args.base_model_path,
+        args.step_model_path,
+        args.svd_base_path,
+        args.start_step,
+        args.end_step,
+        args.rl_algorithm,
+        rank=args.rank,
+        alpha=args.alpha,
+        device=args.device
+    )

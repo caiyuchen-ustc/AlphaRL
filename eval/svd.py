@@ -1,80 +1,116 @@
 import os
 import torch
-import numpy as np
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import sys
+import gc
 from tqdm import tqdm
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import numpy as np
 
-def save_svd_components(model1_path, model2_path, base_output_path, start_step=9, end_step=10):
+@torch.no_grad()
+def save_svd_components(base_model_path, models_root, rl_algorithm, start_step=0, end_step=27, device="cuda"):
+    """
+    Compute SVD of parameter updates between base model and rl models,
+    and save results to the same folder as each step model.
 
-    os.makedirs(base_output_path, exist_ok=True)
+    Args:
+        base_model_path (str): Base model path (e.g., ./dapomodels/DAPO-step-0)
+        models_root (str): Directory containing step models (e.g., ./dapomodels)
+        start_step (int): Starting step index
+        end_step (int): Ending step index
+        device (str): "cuda" or "cpu"
+    """
+    print(f"🧩 Loading base model from {base_model_path}")
+    tokenizer = AutoTokenizer.from_pretrained(base_model_path)
+    base_model = AutoModelForCausalLM.from_pretrained(base_model_path).to(device)
+    base_model.eval()
 
-    tokenizer = AutoTokenizer.from_pretrained(model1_path)
-    model1 = AutoModelForCausalLM.from_pretrained(model1_path)
-    model1.to('cuda')
+    for step in tqdm(range(start_step, end_step + 1), desc="Processing steps"):
+        model_path = os.path.join(models_root, f"{rl_algorithm}-step-{step}")
+        
+        if not os.path.exists(model_path):
+            print(f"⚠️  Skipping step {step}: {model_path} not found.")
+            continue
 
-
-    print(start_step)
-    print(end_step)
-    for global_step in tqdm(range(start_step, end_step + 1)):
-
-        if "aa" in model2_path:
-            current_model2_path = model2_path.format(i=global_step)
-            current_output_path = os.path.join(base_output_path, f"global_step_{global_step}")
-
-            os.makedirs(current_output_path, exist_ok=True)
-        else:
-            current_model2_path = model2_path
-            current_output_path = model2_path
-
-        print(f" {current_model2_path}")
-        model2 = AutoModelForCausalLM.from_pretrained(current_model2_path)
+        print(f"\n🔹 Comparing base model with step {step}: {model_path}")
+        model = AutoModelForCausalLM.from_pretrained(model_path).to(device)
+        model.eval()
 
         svd_components = {}
-        with torch.no_grad():
-            for layer_idx, (layer1, layer2) in enumerate(zip(model1.model.layers, model2.model.layers)):
-                layer_svd = {}
-                for name, param in layer2.self_attn.named_parameters():
-                    if name.endswith('.weight'):
-                        print(f"self_attn.{name}")
-                        ref_param = layer1.self_attn.get_parameter(name)
-                        weight_update = param - ref_param
-                        weight_update.to('cuda')
-                        if weight_update.dim() >= 2:
-                            U, S, Vt = torch.linalg.svd(weight_update, full_matrices=False)
-                            weight_update.cpu()
-                            layer_svd[f'self_attn_{name}_U'] = U.cpu()
-                            layer_svd[f'self_attn_{name}_S'] = S.cpu()
-                            layer_svd[f'self_attn_{name}_Vt'] = Vt.cpu()
-                            
 
-                for name, param in layer2.mlp.named_parameters():
-                    if name.endswith('.weight'):
-                        print(f"    mlp.{name}")
-                        ref_param = layer1.mlp.get_parameter(name)
-                        weight_update = param - ref_param
-                        weight_update.to('cuda')
-                        if weight_update.dim() >= 2:
-                            U, S, Vt = torch.linalg.svd(weight_update, full_matrices=False)
-                            weight_update.cpu()
-                            layer_svd[f'mlp_{name}_U'] = U.cpu()
-                            layer_svd[f'mlp_{name}_S'] = S.cpu()
-                            layer_svd[f'mlp_{name}_Vt'] = Vt.cpu()
-                
+        for layer_idx, (base_layer, new_layer) in enumerate(zip(base_model.model.layers, model.model.layers)):
+            print(f"\n🔹 Computing SVD for layer {layer_idx}")
+            layer_svd = {}
 
-                svd_components[f'layer_{layer_idx}'] = layer_svd
+            # Self-attention weights
+            for name, param in new_layer.self_attn.named_parameters():
+                if name.endswith(".weight"):
+                    ref_param = base_layer.self_attn.get_parameter(name)
+                    # import pdb
+                    # pdb.set_trace()
+                    diff = (param - ref_param).to('cuda')
+                    if diff.dim() == 2:
+                        if device == 'cpu':
+                            U, S, Vt = torch.linalg.svd(diff, full_matrices=False)
+                            # diff_cpu = diff.detach().cpu().numpy()
+                            # U, S, Vt = np.linalg.svd(diff_cpu, full_matrices=False)
+                            # U = torch.from_numpy(U)
+                            # S = torch.from_numpy(S)
+                            # Vt = torch.from_numpy(Vt)
+                        else:
+                            U, S, Vt = torch.linalg.svd(diff, full_matrices=False)
+                        layer_svd[f"self_attn_{name}_U"] = U.cpu()
+                        layer_svd[f"self_attn_{name}_S"] = S.cpu()
+                        layer_svd[f"self_attn_{name}_Vt"] = Vt.cpu()
+                        print(f"  [Self-Attn] {name} | shape={param.shape} | SVD done, rank={len(S)}")
+
+            # MLP weights
+            for name, param in new_layer.mlp.named_parameters():
+                if name.endswith(".weight"):
+                    ref_param = base_layer.mlp.get_parameter(name)
+                    diff = (param - ref_param).to('cuda')
+                    if diff.dim() == 2:
+                        if device == 'cpu':
+                            U, S, Vt = torch.linalg.svd(diff, full_matrices=False)
+                            # diff_cpu = diff.detach().cpu().numpy()
+                            # U, S, Vt = np.linalg.svd(diff_cpu, full_matrices=False)
+                            # U = torch.from_numpy(U)
+                            # S = torch.from_numpy(S)
+                            # Vt = torch.from_numpy(Vt)
+                        else:
+                            U, S, Vt = torch.linalg.svd(diff, full_matrices=False)
+                        layer_svd[f"mlp_{name}_U"] = U.cpu()
+                        layer_svd[f"mlp_{name}_S"] = S.cpu()
+                        layer_svd[f"mlp_{name}_Vt"] = Vt.cpu()
+                        print(f"  [MLP] {name} | shape={param.shape} | SVD done, rank={len(S)}")
+
+            svd_components[f"layer_{layer_idx}"] = layer_svd
+
+        save_path = os.path.join(model_path, "svd_components.pt")
+        torch.save(svd_components, save_path)
         
-
-        torch.save(svd_components, os.path.join(current_output_path, 'svd_components.pt'))
         
+        print(f"✅ SVD components saved: {save_path}")
+        del model, svd_components
+        torch.cuda.empty_cache()
+        gc.collect()
 
+    print("\n🎉 All SVD decompositions completed!")
 
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Compute SVD between base and step models.")
+    parser.add_argument("--base_model_path", type=str, required=True, help="Path to base model (e.g., ./dapomodels/DAPO-step-0)")
+    parser.add_argument("--models_root", type=str, required=True, help="Directory containing all step models (e.g., ./dapomodels)")
+    parser.add_argument("--rl_algorithm", type=str, required=True, help="rl_algorithm")
+    parser.add_argument("--start_step", type=int, default=0)
+    parser.add_argument("--end_step", type=int, default=27)
+    parser.add_argument("--device", type=str, default='cuda', help="rl_algorithm")
+    args = parser.parse_args()
 
-model1_path = ""
-model2_path = ""
-base_output_path = ""
-
-start_step=27
-end_step=27
-print(start_step)
-save_svd_components(model1_path, model2_path, base_output_path, start_step, end_step)
+    save_svd_components(
+        base_model_path=args.base_model_path,
+        models_root=args.models_root,
+        rl_algorithm = args.rl_algorithm,
+        start_step=args.start_step,
+        end_step=args.end_step,
+        device = args.device
+    )

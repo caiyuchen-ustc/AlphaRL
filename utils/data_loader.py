@@ -1,10 +1,18 @@
 import os
+import sys
 import json
 import random
 from datasets import load_dataset, Dataset, concatenate_datasets
 from utils.utils import load_jsonl, lower_keys
 
-def load_data(data_name, split, data_dir='./data'):
+current_file_path = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_file_path)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+def load_data(data_name, split, data_dir=None):
+    if data_dir is None:
+        data_dir = os.path.join(project_root, "data")  # ✅ 注意这里没有斜杠
     data_file = f"{data_dir}/{data_name}/{split}.jsonl"
     if os.path.exists(data_file):
         examples = list(load_jsonl(data_file))
